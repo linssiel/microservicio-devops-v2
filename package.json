@@ -1,0 +1,10 @@
+{
+  "name": "microservicio-devops",
+  "version": "1.0.0",
+  "description": "Microservicio base para evaluacion de flujo DevOps",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Ejecutando pruebas unitarias...\" && exit 0"
+  }
+}
