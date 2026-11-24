@@ -6,8 +6,14 @@ app.get('/', (req, res) => {
     res.json({ message: "Microservicio activo en entorno Cloud simulado" });
 });
 
-app.listen(PORT, () => {
-    console.log(`Servidor ejecutandose en el puerto ${PORT}`);
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: "UP" });
 });
 
-//Modificacion en feature login
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`Servidor ejecutandose en el puerto ${PORT}`);
+    });
+}
+
+module.exports = app;
