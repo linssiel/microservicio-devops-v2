@@ -1,0 +1,13 @@
+node_modules
+coverage
+reports
+.git
+.github
+k8s
+tests
+*.md
+Dockerfile
+docker-compose*.yml
+.env
+.env.*
+npm-debug.log

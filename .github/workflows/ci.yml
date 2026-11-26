@@ -1,39 +1,348 @@
-name: Node.js CI
+name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main", "develop" ]
+    branches: [main, develop]
   pull_request:
-    branches: [ "main", "develop" ]
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
 
 jobs:
-  build:
+  # ---------------------------------------------------------------
+  # 1. PRUEBAS UNITARIAS + COBERTURA (IE2)
+  # ---------------------------------------------------------------
+  test:
+    name: Pruebas unitarias + cobertura (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20.x, 22.x]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          # Full git history is required for SonarCloud blame/diff analysis
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Use Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '22.x'
-          cache: 'npm'
+          node-version: ${{ matrix.node-version }}
+          cache: npm
 
-      - name: Install dependencies
+      - name: Instalar dependencias (reproducible)
         run: npm ci
 
+      # Falla si algún test falla o si la cobertura baja de los umbrales de jest.config.js
+      - name: Ejecutar pruebas con cobertura (quality gate)
+        run: npm run test:ci
+
+      - name: Subir reporte de cobertura
+        if: always() && matrix.node-version == '22.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage/
+          retention-days: 14
+
+      - name: Subir resultados JUnit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.node-version }}
+          path: reports/junit.xml
+          retention-days: 7
+
+      - name: Comentar cobertura en el PR
+        if: github.event_name == 'pull_request' && matrix.node-version == '22.x' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: MishaKav/jest-coverage-comment@main
+        with:
+          coverage-summary-path: ./coverage/coverage-summary.json
+          title: Reporte de cobertura Jest
+          summary-title: Resumen
+          badge-title: Cobertura
+          junitxml-path: ./reports/junit.xml
+
+  # ---------------------------------------------------------------
+  # 2. SEGURIDAD (IE3): dependencias (npm audit + Snyk) y código (SonarCloud)
+  #    Cualquier hallazgo sobre el umbral BLOQUEA el pipeline.
+  # ---------------------------------------------------------------
+  dependency-scan:
+    name: Escaneo de dependencias
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - run: npm ci
+
+      # Sin token: bloquea ante vulnerabilidades HIGH o CRITICAL en producción
+      - name: npm audit (bloqueante)
+        run: npm audit --omit=dev --audit-level=high
+
+      # Snyk: bloquea ante vulnerabilidades HIGH o superiores (requiere secreto SNYK_TOKEN)
+      - name: Snyk test (bloqueante)
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      - name: Snyk monitor (snapshot histórico)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: monitor
+
+  sonarcloud:
+    name: Análisis de código (SonarCloud)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Descargar cobertura
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage/
+
+      # sonar.qualitygate.wait=true: el job falla si el Quality Gate no se aprueba
       - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@v4
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.projectKey=your_organization_your_repo
-            -Dsonar.organization=your_organization
-            -Dsonar.sources=src
-            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.projectVersion=${{ github.sha }}
+
+  # ---------------------------------------------------------------
+  # 3. CONSTRUCCIÓN DE IMAGEN DOCKER (IE1) + publicación en GHCR
+  # ---------------------------------------------------------------
+  build-image:
+    name: Construir y publicar imagen Docker
+    runs-on: ubuntu-latest
+    needs: [test, dependency-scan, sonarcloud]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR exige nombres en minúsculas
+      - name: Definir nombre de imagen
+        id: vars
+        run: echo "image=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Imagen etiquetada con el SHA del commit => trazabilidad commit -> imagen
+      - name: Metadatos de imagen (tags y labels OCI)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Construir imagen
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ steps.vars.outputs.image }}:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Prueba de humo de la imagen construida, antes de publicarla
+      - name: Probar contenedor construido
+        run: |
+          docker run -d --name smoke -p 3000:3000 "${{ steps.vars.outputs.image }}:${{ github.sha }}"
+          for i in $(seq 1 15); do
+            curl -fsS http://localhost:3000/health && break || sleep 2
+          done
+          curl -fsS http://localhost:3000/health | grep -q "${{ github.sha }}"
+          docker rm -f smoke
+
+      - name: Login en GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publicar imagen
+        id: push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+
+      # Atestación de procedencia: certifica qué commit/workflow generó la imagen
+      - name: Atestación de procedencia
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.vars.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # ---------------------------------------------------------------
+  # 4. DESPLIEGUE AUTOMÁTICO EN ENTORNO SIMULADO (IE4)
+  #    4a. Docker Compose (staging)
+  # ---------------------------------------------------------------
+  deploy-compose:
+    name: Despliegue simulado (Docker Compose)
+    runs-on: ubuntu-latest
+    needs: build-image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: staging
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Desplegar con Docker Compose
+        run: |
+          export IMAGE="${{ needs.build-image.outputs.image }}:${{ github.sha }}"
+          docker compose pull
+          docker compose up -d --no-build --wait --wait-timeout 60
+
+      - name: Smoke tests y verificación de trazabilidad
+        run: |
+          curl -fsS http://localhost:3000/health | tee health.json
+          # La versión desplegada debe ser exactamente el commit que disparó el pipeline
+          grep -q "${{ github.sha }}" health.json
+          curl -fsS -X POST http://localhost:3000/api/discount \
+            -H 'Content-Type: application/json' \
+            -d '{"amount":100,"tier":"PREMIUM"}' | grep -q '"finalAmount":95'
+
+      - name: Logs del despliegue
+        if: always()
+        run: docker compose logs --no-color
+
+      - name: Limpiar entorno
+        if: always()
+        run: docker compose down -v
+
+  # 4b. Kubernetes (clúster kind efímero dentro del runner)
+  deploy-k8s:
+    name: Despliegue simulado (Kubernetes / kind)
+    runs-on: ubuntu-latest
+    needs: build-image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: staging
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Crear clúster kind
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: staging
+
+      - name: Cargar imagen publicada en el clúster
+        run: |
+          IMAGE="${{ needs.build-image.outputs.image }}:${{ github.sha }}"
+          docker pull "$IMAGE"
+          kind load docker-image "$IMAGE" --name staging
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Aplicar manifiestos
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/
+          # Inyecta la imagen exacta (SHA) => despliegue trazable
+          kubectl -n nodejs-app set image deployment/nodejs-app app="$IMAGE"
+          kubectl -n nodejs-app annotate deployment/nodejs-app \
+            kubernetes.io/change-cause="commit ${{ github.sha }} (run ${{ github.run_id }})" --overwrite
+
+      - name: Esperar rollout
+        run: kubectl -n nodejs-app rollout status deployment/nodejs-app --timeout=120s
+
+      - name: Smoke test
+        run: |
+          kubectl -n nodejs-app port-forward svc/nodejs-app 8080:80 &
+          sleep 5
+          curl -fsS http://localhost:8080/health | grep -q "${{ github.sha }}"
+          kubectl -n nodejs-app get pods,svc,hpa
+
+      - name: Diagnóstico si falla
+        if: failure()
+        run: |
+          kubectl -n nodejs-app describe pods || true
+          kubectl -n nodejs-app logs -l app=nodejs-app --tail=100 || true
+
+  # ---------------------------------------------------------------
+  # 5. ALERTA: si algo falla en main se abre un Issue automáticamente (IE3)
+  # ---------------------------------------------------------------
+  alert-on-failure:
+    name: Alerta por fallo del pipeline
+    runs-on: ubuntu-latest
+    needs: [test, dependency-scan, sonarcloud, build-image, deploy-compose, deploy-k8s]
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      issues: write
+    steps:
+      - name: Crear Issue de alerta
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "Pipeline fallido en main (${GITHUB_SHA::7})" \
+            --label "ci-failure" \
+            --body "El pipeline falló (análisis de seguridad, pruebas, build o despliegue).
+          Commit: ${{ github.sha }}
+          Ejecución: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+          || gh issue create --repo "${{ github.repository }}" \
+            --title "Pipeline fallido en main (${GITHUB_SHA::7})" \
+            --body "Ejecución: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

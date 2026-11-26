@@ -1,98 +1,138 @@
-# Microservicio DevOps - Evaluacion Parcial 1 y 2
+# NodeJs App — Pipeline CI/CD
 
-**Asignatura:** Ingenieria DevOps (DOY0101)  
-**Proyecto:** Microservicio en Node.js - Evolucion de Pipeline CI/CD, Contenerizacion y Orquestacion  
+Microservicio Node.js (Express) con cálculo de descuentos y validación de órdenes, con un pipeline CI/CD completo en **GitHub Actions**: pruebas, análisis de seguridad, contenedor Docker, despliegue automático en entorno simulado y orquestación (Docker Compose y Kubernetes).
 
----
+> Evaluación Parcial N°2 — DOY0101 Ingeniería DevOps.
+> Integrantes: _(completar nombres)_
 
-## Resumen de la evolucion del proyecto
+## 1. Endpoints
 
-Para la evaluacion parcial 2, el proyecto evoluciono desde una integracion continua basica (CI) hacia un flujo completo de entrega continua (CD) con enfoque DevSecOps, incorporar contenedores y orquestacion de infraestructura.
+| Método | Ruta                  | Descripción                                          |
+|--------|-----------------------|------------------------------------------------------|
+| GET    | `/health`             | Estado del servicio y `version` (SHA del commit)     |
+| POST   | `/api/discount`       | Calcula descuento (`amount`, `tier`, `isFirstPurchase`, `couponCode`) |
+| POST   | `/api/validate-order` | Valida una orden (`customerEmail`, `items[]`)        |
 
-| Componente | Evaluacion Parcial 1 (Base) | Evaluacion Parcial 2 (Implementaciones y Cambios) |
-| :--- | :--- | :--- |
-| **Elegibilidad de Control de Versiones** | Definicion de GitFlow (`main`, `develop`, `feature`, `hotfix`). | Se mantiene el flujo de trabajo y la trazabilidad asociando imagenes al commit de GitHub (`${{ github.sha }}`). |
-| **Pruebas Automatizadas** | Ejecucion basica de scripts en el pipeline `ci.yml`. | Integracion de etapa dedicada de pruebas unitarias (`unit-tests`) en `main.yml` antes de empaquetar. |
-| **Empaquetamiento y Contenedores** | Sin contenerizacion. | Creacion de `Dockerfile` optimizado (`node:18-slim`) con usuario no-root por seguridad. |
-| **Seguridad y Gobernanza** | Verificaciones basicas. | Implementacion de **Trivy** para escaneo de vulnerabilidades en contenedores con bloqueo del pipeline (`exit-code: 1`). |
-| **Orquestacion y Despliegue** | Despliegue manual / Inexistente. | Orquestacion declarativa con `docker-compose.yml`, limites de recursos (0.5 CPU / 512M RAM) y despliegue automatizado simulado. |
+## 2. Arquitectura del pipeline
 
----
+```mermaid
+flowchart LR
+  A[push / PR] --> T[test<br/>Jest + cobertura<br/>Node 20 y 22]
+  A --> D[dependency-scan<br/>npm audit + Snyk]
+  T --> S[sonarcloud<br/>Quality Gate]
+  T --> B
+  D --> B
+  S --> B[build-image<br/>Docker build + smoke test<br/>push a GHCR + atestación]
+  B -->|solo main| C[deploy-compose<br/>staging]
+  B -->|solo main| K[deploy-k8s<br/>kind]
+  C & K -.->|si algo falla en main| AL[Issue de alerta]
+```
 
-# 🔹 EVALUACION PARCIAL 1
+Archivo: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 
-## 1. Por que elegi GitFlow para este proyecto
+| Job | Qué hace | Indicador |
+|-----|----------|-----------|
+| `test` | `npm ci` + `jest --coverage` en Node 20 y 22; falla si un test falla o la cobertura baja de los umbrales | IE2 |
+| `dependency-scan` | `npm audit --audit-level=high` y Snyk (`--severity-threshold=high`). **Bloqueante** (sin `continue-on-error`) | IE3 |
+| `sonarcloud` | Análisis estático + cobertura. `sonar.qualitygate.wait=true`: si el Quality Gate falla, falla el job | IE3 |
+| `build-image` | Construye la imagen con `docker buildx`, la prueba (smoke test) y, en `main`, la publica en GHCR con tag = SHA del commit | IE1 |
+| `deploy-compose` | Descarga la imagen por SHA, `docker compose up --wait`, smoke tests | IE4 |
+| `deploy-k8s` | Crea un clúster `kind`, aplica `k8s/`, espera el rollout y prueba `/health` | IE4 / IE5 |
+| `alert-on-failure` | Si algo falla en `main`, abre un Issue con enlace a la ejecución | IE3 |
 
-Para organizar el desarrollo del microservicio opte por la metodologia **GitFlow**, ya que me permite mantener un control estricto sobre el codigo que entra a produccion y trabajar en nuevas caracteristicas sin romper lo que ya esta funcionando.
+Las pull requests ejecutan test, escaneos y build; el **despliegue solo ocurre en `main`**.
 
-### Comparativa de modelos de trabajo:
-- **GitFlow (Elegido):** Trabaja con dos ramas de larga duracion (`main` y `develop`). Me sirvio mucho para esta evaluacion porque pude crear una rama para la funcionalidad de autenticacion (`feature/login-auth`) y otra para solucionar un fallo urgente en la base de datos (`hotfix/fix-db`), integrando todo de forma ordenada mediante Pull Requests sin tocar produccion directamente.
-- **Trunk-Based Development:** Todos suben cambios directamente a una sola rama principal. Es muy rapido para equipos maduros, pero para este proyecto habria sido riesgoso porque cualquier error en el codigo habria afectado la rama principal sin pasar por una revision previa.
-- **GitHub Flow:** Es un flujo mas simple basado en ramas cortas que van directo a `main`. Aunque es facil de usar, no me daba la separacion clara que necesitaba entre un entorno de desarrollo e integracion (`develop`) y uno de produccion (`main`).
+## 3. Contenedores (IE1)
 
-**Conclusion:** GitFlow fue la mejor opcion para esta entrega porque garantiza un ciclo de vida claro para el software, permitiendome probar los cambios en `develop` y ejecutar pipelines automaticos antes de autorizar el pase a `main`.
-
-## 2. Convenciones y buenas practicas del repositorio (EP1)
-
-### Estructura de Ramas
-- `main`: Contiene unicamente codigo estable y listo para desplegar.
-- `develop`: Es la rama de integracion donde uni las nuevas funcionalidades antes de pasar a produccion.
-- `feature/login-auth`: Rama donde desarrolle el modulo de autenticacion del usuario.
-- `hotfix/fix-db`: Rama que cree de emergencia para corregir el timeout de la conexion a la base de datos.
-
-### Formato de commits (Conventional Commits)
-- `feat:` Para agregar una nueva funcion (ej: `feat: agrega ruta de login`).
-- `fix:` Para corregir errores en el codigo (ej: `fix: corregido timeout de bd`).
-- `ci:` Para cambios en la configuracion de GitHub Actions (ej: `ci: agrega pipeline de github actions`).
-- `docs:` Para cambios en este documento o documentacion del codigo.
-
-### Flujo de integracion (Pull Requests)
-- Evite hacer *push* directo a las ramas `main` y `develop`.
-- Todo cambio lo realice en su propia rama y solicite la union mediante un **Pull Request (PR)**.
-
-## 3. Declaración de Uso de Inteligencia Artificial (EP1)
-
-| Herramienta | En que se utilizo | Validacion realizada |
-| :--- | :--- | :--- |
-| **Gemini / ChatGPT** | Apoyo en la resolucion de sintaxis para el archivo `.github/workflows/ci.yml`, comandos de PowerShell para la estructura de carpetas y sugerencias de formato Markdown. | Todos los comandos, la estructura de ramas, los merges manuales y el pipeline los probe y ejecute directamente en la terminal de VS Code y en mi repositorio de GitHub. |
-
-## 4. Reflexión Personal (EP1)
-
-> "Durante el desarrollo de este proyecto me di cuenta de lo importante que es tener un flujo de trabajo bien definido. Al principio trabajar sola con tantas ramas como `develop`, `feature` y `hotfix` parecia un proceso largo, pero al simular el error en la base de datos vi lo util que es reparar un problema urgente sin ensuciar el desarrollo que esta en curso. Ademas, ver el check verde en GitHub Actions me dio la tranquilidad de que el codigo al menos compila e instala sus dependencias antes de fusionarlo a la rama principal."
-
----
-
-# 🔹 EVALUACION PARCIAL 2
-
-## 1. Justificación de los Cambios e Implementaciones (EP2)
-
-Para esta segunda evaluacion, el pipeline fue completamente actualizado para cubrir todo el ciclo de vida de la aplicacion utilizando **GitHub Actions**. Las principales mejoras e implementaciones aplicadas son:
-
-1. **Contenerizacion del Microservicio (`Dockerfile` - IE1):** Se empaqueto la aplicacion Node.js utilizando una imagen optimizada `node:18-slim` y se configuro un usuario no-root (`appuser`) para cumplir con requerimientos de seguridad y gobernanza.
-2. **Pruebas Automatizadas Integradas (IE2):** Se estructuro un job de pruebas automatizadas en el pipeline para validar el codigo antes de la construccion de imagenes.
-3. **Escaneo de Seguridad DevSecOps y Regla de Bloqueo (`Trivy` - IE3):** Se incorporo el escaneo de seguridad en la imagen Docker mediante Trivy. Se configuro una politica estricta de bloqueo (`exit-code: 1`), cancelando el pipeline de forma automatica si se detectan vulnerabilidades de severidad `CRITICAL` o `HIGH`.
-4. **Orquestación y Gestion de Recursos (`docker-compose.yml` - IE5):** Se definio la infraestructura de forma declarativa con `docker-compose.yml`, configurando limites explicitos de hardware (maximo 0.5 CPU y 512M de memoria RAM) para garantizar estabilidad y desempeno.
-5. **Despliegue Automatico Simulado y Trazabilidad (IE4):** El pipeline despliega automaticamente el microservicio orquestado en un entorno cloud simulado. La trazabilidad entre desarrollo y produccion se asegura etiquetando las imagenes con el hash del commit (`${{ github.sha }}`).
-
-## 2. Instrucciones para Ejecución Local (EP2)
-
-Para probar la nueva version contenerizada y orquestada localmente:
+- [`Dockerfile`](Dockerfile) multi-stage sobre `node:22-alpine` (imagen liviana), solo dependencias de producción (`npm ci --omit=dev`).
+- Se ejecuta con usuario no-root (`USER node`), tiene `HEALTHCHECK` y `.dockerignore`.
+- `ARG GIT_SHA` → `APP_VERSION`: el commit queda dentro de la imagen y se expone en `/health`.
 
 ```bash
-# Construir y levantar el contenedor orquestado en segundo plano
-docker-compose up -d --build
+docker build --build-arg GIT_SHA=$(git rev-parse HEAD) -t node-app:local .
+docker run --rm -p 3000:3000 node-app:local
+curl localhost:3000/health
+```
 
-# Verificar que los contenedores esten activos y saludables
-docker ps
+## 4. Orquestación (IE5)
 
-## 3. Declaracion de Uso de Inteligencia Artificial
+**Docker Compose** ([`docker-compose.yml`](docker-compose.yml)): healthcheck, `restart: unless-stopped`, límites de CPU/memoria, `read_only`, `cap_drop: ALL`, `no-new-privileges`.
 
-Uso de herramientas de IA generativa durante el desarrollo del proyecto:
+```bash
+docker compose up --build        # local
+```
 
-| Herramienta | En que se utilizo | Validacion realizada |
-| :--- | :--- | :--- |
-| **Gemini / ChatGPT** | Apoyo en la resolucion de sintaxis para el archivo .github/workflows/main.yml, la configuracion de limites de recursos en docker-compose.yml y sugerencias de formato Markdown. | Todos los archivos de configuracion, la estructura de archivos y las verificaciones en GitHub Actions se probaron y ejecutaron directamente en VS Code y en el repositorio. |
+**Kubernetes** ([`k8s/`](k8s/)):
+- `Deployment`: 2 réplicas, `RollingUpdate` con `maxUnavailable: 0` (sin caída), readiness/liveness probes sobre `/health`, `requests/limits`, `securityContext` (no-root, FS de solo lectura, sin capabilities).
+- `Service` ClusterIP (80 → 3000).
+- `HorizontalPodAutoscaler`: 2–5 réplicas al 70 % de CPU.
 
-## 4. Reflexion Personal
+```bash
+kubectl apply -f k8s/namespace.yaml && kubectl apply -f k8s/
+kubectl -n nodejs-app set image deployment/nodejs-app app=<imagen>
+```
 
-> "Durante el desarrollo de esta evaluacion comprendi lo relevante que es incorporar la seguridad y la orquestacion dentro del mismo flujo de integracion continua. Configurar el bloqueo del pipeline ante fallas de seguridad con Trivy me me demostro como el enfoque DevSecOps evita que vulnerabilidades criticas lleguen a un entorno de produccion. Ademas, ver que el microservicio se compila, se evalua, se escanea y se despliega de forma totalmente automatizada en GitHub Actions me dio la tranquilidad de contar con un flujo profesional y trazable."
+> En `kind` no hay metrics-server, por lo que el HPA queda creado pero sin métricas; en un clúster real escala según CPU.
+
+## 5. Seguridad y gobernanza (IE3)
+
+- **Dependabot** ([`.github/dependabot.yml`](.github/dependabot.yml)): PRs semanales para npm, imagen base Docker y GitHub Actions.
+- **Snyk + npm audit**: bloquean ante vulnerabilidades HIGH/CRITICAL.
+- **SonarCloud** con Quality Gate bloqueante.
+- **Alerta**: Issue automático cuando el pipeline falla en `main`.
+- **Permisos mínimos** (`permissions: contents: read` por defecto, elevados solo por job).
+- Contenedor no-root y endurecido.
+
+### Configuración requerida en GitHub
+
+1. **Secrets** (Settings → Secrets and variables → Actions): `SNYK_TOKEN`, `SONAR_TOKEN`.
+2. En `sonar-project.properties` reemplazar `sonar.projectKey` y `sonar.organization` por los del equipo.
+3. **Branch protection** sobre `main` (Settings → Branches): exigir PR y los status checks `test`, `dependency-scan`, `sonarcloud` y `build-image`. Así un fallo de seguridad **bloquea el merge**.
+4. **Environment** `staging` (Settings → Environments): opcional, permite aprobaciones manuales antes de desplegar.
+5. Settings → Actions → General → Workflow permissions: _Read and write_ (para crear Issues y publicar en GHCR).
+
+## 6. Trazabilidad (IE4)
+
+Cada cambio se puede seguir de punta a punta:
+
+1. **Commit/PR** → dispara el pipeline (cada ejecución queda registrada en la pestaña *Actions*).
+2. **Imagen** etiquetada con el SHA completo del commit y con labels OCI (origen, revisión) vía `docker/metadata-action`.
+3. **Atestación de procedencia** (`attest-build-provenance`): certifica qué commit y workflow construyó la imagen.
+4. **Despliegue**: Compose y Kubernetes usan la imagen por SHA (nunca `latest`); en K8s se anota `change-cause` con commit y run id.
+5. **Verificación**: `/health` devuelve `version` = SHA; el smoke test comprueba que coincide con el commit que disparó el pipeline.
+
+## 7. Calidad (IE2)
+
+- 32 pruebas unitarias y de API (Jest + Supertest), cobertura ≈ 98 %.
+- Quality gate en [`jest.config.js`](jest.config.js): mínimo 80 % global (90 % ramas / 95 % líneas en `discountCalculator.js`). Si baja, el job `test` falla.
+- Reportes: JUnit y cobertura (lcov/HTML) como artefactos; comentario de cobertura en cada PR; SonarCloud analiza el mismo `lcov.info`.
+
+```bash
+npm ci
+npm test            # tests + cobertura + quality gate
+```
+
+## 8. Estructura
+
+```
+src/                       código del microservicio
+tests/                     pruebas (discountCalculator, orderValidator, app)
+Dockerfile, .dockerignore  contenedor
+docker-compose.yml         orquestación Compose
+k8s/                       orquestación Kubernetes
+.github/workflows/ci.yml   pipeline CI/CD
+.github/dependabot.yml     actualización/escaneo de dependencias
+sonar-project.properties   configuración SonarCloud
+```
+
+## 9. Declaración de uso de IA
+
+_(Completar: indicar qué herramientas de IA se usaron y cómo se aplicaron, citando según https://bibliotecas.duoc.cl/ia)_
+
+## 10. Conclusiones y reflexiones individuales
+
+_(Cada integrante debe redactar aquí, sin apoyo de IA, su reflexión personal sobre su aprendizaje y contribución. La pauta prohíbe usar IA para esta sección.)_
+
+**Integrante 1:**
+
+**Integrante 2:**
