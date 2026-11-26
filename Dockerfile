@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Etapa 1: dependencias de producción ----------
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 # Instalación reproducible y solo con dependencias de producción
 RUN npm ci --omit=dev && npm cache clean --force
 
 # ---------- Etapa 2: imagen final ----------
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 
 # Trazabilidad: el commit que originó la imagen queda dentro del contenedor
 ARG GIT_SHA=local
