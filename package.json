@@ -7,4 +7,5 @@
     "start": "node index.js",
     "test": "echo \"Ejecutando pruebas unitarias...\" && exit 0"
   }
+  
 }
