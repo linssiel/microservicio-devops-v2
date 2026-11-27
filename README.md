@@ -4,8 +4,8 @@
 
 Microservicio Node.js (Express) con cálculo de descuentos y validación de órdenes, con un pipeline CI/CD completo en **GitHub Actions**: pruebas, análisis de seguridad, contenedor Docker, despliegue automático en entorno simulado y orquestación (Docker Compose y Kubernetes).
 
-> Evaluación Parcial N°2 — DOY0101 Ingeniería DevOps.
-> Integrantes: _(completar nombres)_
+> Evaluación Parcial N°2 — 007D Ingeniería DevOps.
+> Integrante: Ayline Rios Lepin
 
 ## 1. Endpoints
 
@@ -177,10 +177,8 @@ Quality Gate *Sonar way*: **Passed**. Cobertura 92,6 %, duplicaciones 0 %, 0 sec
 
 _(Completar: indicar qué herramientas de IA se usaron y cómo se aplicaron, citando según https://bibliotecas.duoc.cl/ia)_
 
-## 11. Conclusiones y reflexiones individuales
+## 11. Conclusión y reflexiones.
 
-_(Cada integrante debe redactar aquí, sin apoyo de IA, su reflexión personal sobre su aprendizaje y contribución. La pauta prohíbe usar IA para esta sección.)_
+Al integrar este flujo de trabajo en mi microservicio, logré automatizar por completo el ciclo de vida del desarrollo, desde que subo un cambio a github hasta que el código queda validado, empaquetado y desplegado. La combinación de pruebas unitarias con control de cobertura, escaneos de seguridad (npm audit, Snyk y SonarCloud), contenerización segura y despliegues en entornos como Docker Compose y Kubernetes asegura que cada nueva versión sea estable, trazable y libre de vulnerabilidades conocidas antes de llegar a producción.
 
-**Integrante 1:**
-
-**Integrante 2:**
+Al construir este pipeline sin un compañero me hizo cambiar la forma en que veo el desarrollo de software. Al principio puede parecer que configurar tantas herramientas como los manifiestos de Kubernetes, las reglas de calidad o el Dockerfile sin permisos de administrador quita tiempo de programación, pero en la práctica es todo lo contrario. Cuando el flujo se detuvo por la vulnerabilidad en body-parser, entendí lo importante de tener estos filtros automáticos: es mucho mejor que el pipeline falle frente a mí en segundos a que un problema de seguridad o un error pase desapercibido. También me permitió comprender cómo se conectan las piezas en un entorno real. No se trata solo de escribir códigos que funcionen, sino de garantizar que sea reproducible, escalable y fácil de mantener a futuro (incluso apoyándome en herramientas como Dependabot para no quedarme atrás con las actualizaciones). Aunque fue un desafío integrar y depurar cada etapa sola (además de volver a hacerlo ya que la primera vez por motivos personales hice todo mal y me saque la nota minima), ver cómo un simple git push dispara todas las validaciones y levanta el servicio automáticamente me da mucha más seguridad y confianza en mi trabajo, lo cual tambien hace que me de cuenta que esta asignatura no es para nada compleja, es solo darse el tiempo de leer bien y darse el tiempo de entender lo que se solicita para hacer las actividades sin complicaciones.
