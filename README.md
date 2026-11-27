@@ -1,5 +1,7 @@
 # NodeJs App — Pipeline CI/CD
 
+[![CI/CD Pipeline](https://github.com/linssiel/microservicio-devops-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/linssiel/microservicio-devops-v2/actions/workflows/ci.yml)
+
 Microservicio Node.js (Express) con cálculo de descuentos y validación de órdenes, con un pipeline CI/CD completo en **GitHub Actions**: pruebas, análisis de seguridad, contenedor Docker, despliegue automático en entorno simulado y orquestación (Docker Compose y Kubernetes).
 
 > Evaluación Parcial N°2 — DOY0101 Ingeniería DevOps.
@@ -80,6 +82,7 @@ kubectl -n nodejs-app set image deployment/nodejs-app app=<imagen>
 - **Snyk + npm audit**: bloquean ante vulnerabilidades HIGH/CRITICAL.
 - **SonarCloud** con Quality Gate bloqueante.
 - **Alerta**: Issue automático cuando el pipeline falla en `main`.
+- **Actions fijadas por hash de commit** (supply chain): cada `uses:` apunta al SHA completo, con el tag como comentario (`# v4`), siguiendo la regla de SonarCloud "Use full commit SHA hash for this dependency". Dependabot (`github-actions`) propone las actualizaciones de esos hashes.
 - **Permisos mínimos** (`permissions: contents: read` por defecto, elevados solo por job).
 - Contenedor no-root y endurecido.
 
@@ -125,11 +128,56 @@ k8s/                       orquestación Kubernetes
 sonar-project.properties   configuración SonarCloud
 ```
 
-## 9. Declaración de uso de IA
+## 9. Evidencias de ejecución
+
+Repositorio: https://github.com/linssiel/microservicio-devops-v2
+
+### 9.1 El pipeline bloquea cuando el análisis de seguridad falla (IE3)
+
+**a) Dependencias vulnerables.** En la primera ejecución, el job *Escaneo de dependencias* falló porque `npm audit --omit=dev --audit-level=high` detectó vulnerabilidades en dependencias transitivas de Express:
+
+| Paquete | Severidad | Advisory |
+|---------|-----------|----------|
+| `body-parser` 2.0.0 – 2.3.0 | High | GHSA-v422-hmwv-36x6, GHSA-27r3-jxmh-p828 (denegación de servicio) |
+| `proxy-addr` 1.1.0 – 2.0.7 | Critical | GHSA-jqcg-44mw-7w3h (IP spoofing) |
+
+![Pipeline bloqueado por npm audit](docs/evidencias/01-bloqueo-npm-audit.png)
+
+Los jobs de construcción de imagen y de despliegue quedaron **omitidos**: no se publicó ni desplegó una imagen con vulnerabilidades. Se corrigió con `npm audit fix` (`body-parser` 2.4.0 y `proxy-addr` 2.0.8 en `package-lock.json`).
+
+**b) Hallazgos de SonarCloud.** SonarCloud detectó en `.github/workflows/ci.yml` hallazgos de seguridad de severidad *High*: «Use full commit SHA hash for this dependency» (actions referenciadas por tag o rama en lugar de por el hash del commit, riesgo de cadena de suministro).
+
+![Hallazgos de SonarCloud en ci.yml](docs/evidencias/06-sonar-hallazgos.png)
+
+En el run #21 («correcciones en sonar») el job de **SonarCloud falló**, y esto detuvo el flujo: la construcción de la imagen y los dos despliegues quedaron omitidos, y se ejecutó el job *Alerta por fallo del pipeline*.
+
+![Run #21 bloqueado en SonarCloud](docs/evidencias/05-run-bloqueado-sonar.png)
+
+Corrección: todas las actions se fijaron al hash completo del commit (con el tag como comentario) y se añadió Dependabot para mantenerlas actualizadas.
+
+### 9.2 Pipeline completo exitoso (IE2, IE3, IE4, IE5)
+
+Run #22 sobre `main` (commit `15667b2`, duración 3 min 27 s, 5 artefactos). Todos los jobs en verde: pruebas en Node 20 y 22, escaneo de dependencias, SonarCloud, construcción y publicación de la imagen, y despliegue en Docker Compose y en Kubernetes (kind). El job de alerta queda omitido porque solo se ejecuta ante un fallo.
+
+![Run #22 exitoso](docs/evidencias/02-run-exitoso.png)
+
+### 9.3 Pruebas automatizadas y cobertura (IE2)
+
+32 pruebas pasan (3 suites). Cobertura: 98,46 % de sentencias y líneas, 97,91 % de ramas, 100 % de funciones, por encima de los umbrales definidos en `jest.config.js`.
+
+![Pruebas y cobertura](docs/evidencias/03-pruebas-cobertura.png)
+
+### 9.4 Quality Gate de SonarCloud (IE3)
+
+Quality Gate *Sonar way*: **Passed**. Cobertura 92,6 %, duplicaciones 0 %, 0 security hotspots, calificación A en fiabilidad y mantenibilidad. Seguridad muestra 5 *issues* abiertos (calificación C) que quedan como mejora pendiente.
+
+![Quality Gate de SonarCloud](docs/evidencias/04-sonar-quality-gate.png)
+
+## 10. Declaración de uso de IA
 
 _(Completar: indicar qué herramientas de IA se usaron y cómo se aplicaron, citando según https://bibliotecas.duoc.cl/ia)_
 
-## 10. Conclusiones y reflexiones individuales
+## 11. Conclusiones y reflexiones individuales
 
 _(Cada integrante debe redactar aquí, sin apoyo de IA, su reflexión personal sobre su aprendizaje y contribución. La pauta prohíbe usar IA para esta sección.)_
 
