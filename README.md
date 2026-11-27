@@ -175,7 +175,10 @@ Quality Gate *Sonar way*: **Passed**. Cobertura 92,6 %, duplicaciones 0 %, 0 sec
 
 ## 10. Declaración de uso de IA
 
-_(Completar: indicar qué herramientas de IA se usaron y cómo se aplicaron, citando según https://bibliotecas.duoc.cl/ia)_
+En el desarrollo de este proyecto se utilizaron herramientas de inteligencia artificial generativa como apoyo técnico y de redacción, manteniendo en todo momento la supervisión, validación y autoría sobre el resultado final:
+Claude (Anthropic): Se utilizó como asistente técnico para comprender la estructura de los archivos de configuración del flujo de integración continua (GitHub Actions), manifiestos de Kubernetes (k8s/), optimización del Dockerfile y depuración de errores durante la automatización del pipeline (como la detección de vulnerabilidades en dependencias).
+Gemini (Google): Se empleó como apoyo en la organización de ideas, síntesis de información técnica y revisión de estilo para la redacción de la documentación, conclusiones y reflexiones del informe.   
+Referencias (Formato APA 7.ª ed.)   Anthropic. (2026). Claude [Modelo de lenguaje de gran tamaño]. https://claude.ai/Google. (2026). Gemini [Modelo de lenguaje de gran tamaño]. https://gemini.google.com/
 
 ## 11. Conclusión y reflexiones.
 
